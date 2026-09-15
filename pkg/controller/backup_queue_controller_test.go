@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -284,4 +285,39 @@ func TestBackupQueueReconcilerTrackerNotLeakedWhenBackupCompletesDuringPatch(t *
 
 	assert.Equal(t, 0, backupTracker.RunningCount(),
 		"tracker entry must not be leaked when a racing reconcile completes the backup before AddReadyToStart runs")
+}
+
+// TestBackupQueueReconcilerTrackerRolledBackWhenPatchFails verifies that if the
+// ReadyToStart patch itself fails, the AddReadyToStart call made just before it is
+// rolled back via Delete, so a failed patch doesn't itself permanently consume a
+// concurrency slot.
+func TestBackupQueueReconcilerTrackerRolledBackWhenPatchFails(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, velerov1api.AddToScheme(scheme))
+
+	backup := builder.ForBackup(velerov1api.DefaultNamespace, "backup-11").Phase(velerov1api.BackupPhaseQueued).QueuePosition(1).Result()
+	backupTracker := NewBackupTracker()
+
+	patchErr := errors.New("simulated patch failure")
+	fakeClient := velerotest.NewFakeControllerRuntimeClientBuilder(t).
+		WithRuntimeObjects(backup).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c ctrlClient.WithWatch, obj ctrlClient.Object, patch ctrlClient.Patch, opts ...ctrlClient.PatchOption) error {
+				if b, ok := obj.(*velerov1api.Backup); ok && b.Status.Phase == velerov1api.BackupPhaseReadyToStart {
+					return patchErr
+				}
+				return c.Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+
+	logger := logrus.New()
+	log := logger.WithField("controller", "backup-queue-test")
+	r := NewBackupQueueReconciler(fakeClient, scheme, log, 1, backupTracker)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: backup.Namespace, Name: backup.Name}}
+	_, err := r.Reconcile(t.Context(), req)
+	require.Error(t, err)
+
+	assert.Equal(t, 0, backupTracker.RunningCount(),
+		"tracker entry must be rolled back when the ReadyToStart patch fails")
 }
