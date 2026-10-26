@@ -21,6 +21,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -774,4 +775,15 @@ func TestBlockUploaderRestore(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "dest dev(/dev/small) size is too small")
 	})
+}
+
+func TestAsyncWrites(t *testing.T) {
+	prev := runtime.GOMAXPROCS(0)
+	defer runtime.GOMAXPROCS(prev)
+
+	runtime.GOMAXPROCS(4)
+	assert.Equal(t, 4, asyncWrites())
+
+	runtime.GOMAXPROCS(64)
+	assert.Equal(t, maxAsyncWrites, asyncWrites())
 }

@@ -43,6 +43,10 @@ const (
 	blockSize         = (1 << 20)
 	bufferSize        = 100 << 20
 	bdevSourceSizeTag = "bdev-source-size"
+
+	// maxAsyncWrites caps the number of in-flight async writes; each holds a block copy
+	// plus compression and pack buffers, so the burst must stay bounded on large nodes.
+	maxAsyncWrites = 16
 )
 
 type sourceInfo struct {
@@ -79,6 +83,12 @@ func NewUploader(ctx context.Context, repoWriter udmrepo.BackupRepo, progress up
 	}
 }
 
+// asyncWrites follows GOMAXPROCS (which honors the container CPU limit) rather than the
+// node's CPU count, capped at maxAsyncWrites.
+func asyncWrites() int {
+	return min(runtime.GOMAXPROCS(0), maxAsyncWrites)
+}
+
 func (blkup *blockUploader) Backup(source sourceInfo, parentObject udmrepo.ID, bitmap cbt.Iterator, configs map[string]string) (udmrepo.Snapshot, int64, error) {
 	snapStart := blkup.repoWriter.Time()
 
@@ -103,7 +113,7 @@ func (blkup *blockUploader) Backup(source sourceInfo, parentObject udmrepo.ID, b
 		AccessMode:   udmrepo.ObjectDataAccessModeBlock,
 		ParentObject: parentObject,
 		BackupMode:   backupMode,
-		AsyncWrites:  runtime.NumCPU(),
+		AsyncWrites:  asyncWrites(),
 	})
 	if err != nil {
 		return udmrepo.Snapshot{}, 0, errors.Wrap(err, "error creating object writer")

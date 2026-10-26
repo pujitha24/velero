@@ -1,0 +1,1 @@
+Cap block uploader async writes at min(GOMAXPROCS, 16) so they follow the container CPU limit and stay bounded on large nodes
